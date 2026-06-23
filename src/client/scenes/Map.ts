@@ -23,6 +23,9 @@ export class MapScene extends Scene {
     private nodes: MapNode[] = [];
     private playerMarker!: Phaser.GameObjects.Arc;
     private currentNodeIndex: number = 0;
+    private titleText!: Phaser.GameObjects.Text;
+    // Position functions for open popup, called on resize to keep popup screen-centered
+    private popupPositionFns: Array<(w: number, h: number, s: number) => void> = [];
 
     constructor() {
         super('MapScene');
@@ -31,24 +34,24 @@ export class MapScene extends Scene {
     create() {
         this.cameras.main.setBackgroundColor('#2b2b2b');
 
-        this.add.text(this.scale.width / 2, 40, 'Mappa di Gioco', {
-            fontSize: '28px', color: '#e94560', fontFamily: 'Arial, sans-serif', fontStyle: 'bold'
+        this.titleText = this.add.text(this.scale.width / 2, 40, 'Mappa di Gioco', {
+            fontSize: '28px', color: '#e94560', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0);
 
         this.stepsText = this.add.text(this.scale.width / 2, 80, 'Caricamento Passi...', {
-            fontSize: '22px', color: '#ffffff', fontFamily: 'Arial, sans-serif', fontStyle: 'bold'
+            fontSize: '22px', color: '#ffffff', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0);
 
         this.soulsText = this.add.text(this.scale.width / 2, 110, 'Anime: 0', {
-            fontSize: '20px', color: '#9c27b0', fontFamily: 'Arial, sans-serif', fontStyle: 'bold'
+            fontSize: '20px', color: '#9c27b0', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0);
 
         this.depthText = this.add.text(20, 20, 'Depth: 0 (Max: 0)', {
-            fontSize: '18px', color: '#00bcd4', fontFamily: 'Arial, sans-serif', fontStyle: 'bold'
+            fontSize: '18px', color: '#00bcd4', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0, 0).setScrollFactor(0);
 
         this.leaderboardText = this.add.text(this.scale.width - 200, 20, 'Leaderboard...', {
-            fontSize: '14px', color: '#ffeb3b', fontFamily: 'Arial, sans-serif', fontStyle: 'bold'
+            fontSize: '14px', color: '#ffeb3b', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0, 0).setScrollFactor(0);
         
         this.fetchSteps().catch(console.error);
@@ -68,6 +71,27 @@ export class MapScene extends Scene {
         }
 
         this.drawMap();
+
+        // With RESIZE mode and no fixed dims, scale.width/height always equals
+        // the real viewport. Just sync camera size on resize.
+        this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
+            this.cameras.main.setSize(gameSize.width, gameSize.height);
+            this.cameras.main.setPosition(0, 0);
+            this.updateLayout(gameSize.width, gameSize.height);
+        });
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    updateLayout(width: number, _height: number) {
+        if (this.titleText) this.titleText.setPosition(width / 2, 40);
+        if (this.stepsText) this.stepsText.setPosition(width / 2, 80);
+        if (this.soulsText) this.soulsText.setPosition(width / 2, 110);
+        if (this.leaderboardText) this.leaderboardText.setPosition(width - 200, 20);
+        // Reposition all open popup elements
+        if (this.popupPositionFns.length > 0) {
+            const s = Math.min(1, width / 650, _height / 480);
+            this.popupPositionFns.forEach(fn => fn(width, _height, s));
+        }
     }
 
     async fetchSteps() {
@@ -112,72 +136,101 @@ export class MapScene extends Scene {
     }
 
     showShopPopup(targetNode: MapNode) {
-        // Overlay
-        const overlay = this.add.rectangle(0, 0, this.scale.width, this.scale.height, 0x000000, 0.8)
-            .setOrigin(0, 0)
-            .setInteractive()
-            .setScrollFactor(0)
-            .setDepth(100);
+        const W = this.scale.width;
+        const H = this.scale.height;
+        const popupScale = Math.min(1, W / 650, H / 480);
+        const cx = W / 2;
+        const cy = H / 2;
 
-        const popupBg = this.add.rectangle(this.scale.width / 2, this.scale.height / 2, 600, 400, 0x222222)
-            .setStrokeStyle(4, 0x555555)
-            .setScrollFactor(0)
-            .setDepth(101);
+        // All elements use setScrollFactor(0) → fixed to screen, not world.
+        // This means resize never moves them off screen.
 
-        const title = this.add.text(this.scale.width / 2, this.scale.height / 2 - 160, 'MERCANTE ERRANTE', {
-            fontSize: '28px', color: '#ffeb3b', fontStyle: 'bold', fontFamily: 'Arial'
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(101);
+        const overlay = this.add.rectangle(cx, cy, 99999, 99999, 0x000000, 0.82)
+            .setScrollFactor(0).setDepth(200).setInteractive();
 
-        const closeBtn = this.add.rectangle(this.scale.width / 2, this.scale.height / 2 + 160, 150, 40, 0xe94560)
+        const popupBg = this.add.rectangle(cx, cy, 620, 420, 0x1a1a2e)
+            .setStrokeStyle(3, 0xe94560)
+            .setScrollFactor(0).setDepth(201);
+
+        const title = this.add.text(cx, cy - 175, '🧟 MERCANTE ERRANTE 🧟', {
+            fontSize: '22px', color: '#ffeb3b', fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
+
+        const subTitle = this.add.text(cx, cy - 148, 'Scegli fino a 3 oggetti', {
+            fontSize: '13px', color: '#888888', fontFamily: '"Exo 2", Arial'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
+
+        const closeBtn = this.add.rectangle(cx, cy + 180, 160, 42, 0xe94560)
+            .setScrollFactor(0).setDepth(201)
             .setInteractive({ useHandCursor: true })
-            .setScrollFactor(0)
-            .setDepth(101)
+            .on('pointerover', () => closeBtn.setFillStyle(0xff5c77))
+            .on('pointerout', () => closeBtn.setFillStyle(0xe94560))
             .on('pointerdown', () => {
                 cleanup();
                 this.resolveNodeEvent(targetNode).catch(console.error);
             });
-            
-        const closeTxt = this.add.text(this.scale.width / 2, this.scale.height / 2 + 160, 'Saluta e Vai', {
-            fontSize: '18px', color: '#ffffff', fontStyle: 'bold', fontFamily: 'Arial'
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(101);
 
-        const elements: Phaser.GameObjects.GameObject[] = [overlay, popupBg, title, closeBtn, closeTxt];
+        const closeTxt = this.add.text(cx, cy + 180, 'Saluta e Vai', {
+            fontSize: '17px', color: '#ffffff', fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
-        // Randomly pick 3 items (simple shuffle)
+        const allElements: Phaser.GameObjects.GameObject[] = [overlay, popupBg, title, subTitle, closeBtn, closeTxt];
+
+        // Position functions: called on resize to keep everything screen-centered
+        const positionFns: Array<(w: number, h: number, s: number) => void> = [
+            (w, h) => { overlay.setPosition(w / 2, h / 2); },
+            (w, h) => { popupBg.setPosition(w / 2, h / 2); },
+            (w, h) => { title.setPosition(w / 2, h / 2 - 175); },
+            (w, h) => { subTitle.setPosition(w / 2, h / 2 - 148); },
+            (w, h) => { closeBtn.setPosition(w / 2, h / 2 + 180); },
+            (w, h) => { closeTxt.setPosition(w / 2, h / 2 + 180); },
+        ];
+
+        // Pick 3 random items
         const shuffled = [...ITEMS].sort(() => 0.5 - Math.random());
         const selectedItems = shuffled.slice(0, 3);
 
-        const startX = this.scale.width / 2 - 180;
-        
         selectedItems.forEach((item, index) => {
-            const x = startX + (index * 180);
-            const y = this.scale.height / 2 - 10;
+            const offX = (index - 1) * 190 * popupScale; // -190, 0, +190 from center
 
-            const card = this.add.rectangle(x, y, 160, 200, 0x333333)
+            const cardX = cx + offX;
+            const cardY = cy + 10;
+            const cardW = 170 * popupScale;
+            const cardH = 210 * popupScale;
+
+            const card = this.add.rectangle(cardX, cardY, cardW, cardH, 0x16213e)
                 .setStrokeStyle(2, item.color)
-                .setScrollFactor(0)
-                .setDepth(101);
+                .setScrollFactor(0).setDepth(201);
 
-            const nameTxt = this.add.text(x, y - 70, item.name, {
-                fontSize: '16px', color: '#ffffff', fontStyle: 'bold', fontFamily: 'Arial', align: 'center', wordWrap: { width: 150 }
-            }).setOrigin(0.5).setScrollFactor(0).setDepth(101);
+            const nameTxt = this.add.text(cardX, cardY - 72 * popupScale, item.name, {
+                fontSize: `${Math.floor(15 * popupScale)}px`,
+                color: '#ffffff', fontStyle: 'bold', fontFamily: '"Exo 2", Arial',
+                align: 'center', wordWrap: { width: 150 * popupScale }
+            }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
-            const rarityTxt = this.add.text(x, y - 30, `[${item.rarity}]`, {
-                fontSize: '14px', color: `#${item.color.toString(16).padStart(6, '0')}`, fontStyle: 'bold', fontFamily: 'Arial'
-            }).setOrigin(0.5).setScrollFactor(0).setDepth(101);
+            const rarityColor = `#${item.color.toString(16).padStart(6, '0')}`;
+            const rarityTxt = this.add.text(cardX, cardY - 30 * popupScale, `[${item.rarity}]`, {
+                fontSize: `${Math.floor(13 * popupScale)}px`,
+                color: rarityColor, fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+            }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
-            const effectTxt = this.add.text(x, y + 10, `+${item.effectValue} ${item.effectType.toUpperCase()}`, {
-                fontSize: '14px', color: '#a0a0a0', fontFamily: 'Arial', align: 'center', wordWrap: { width: 140 }
-            }).setOrigin(0.5).setScrollFactor(0).setDepth(101);
+            const effectTxt = this.add.text(cardX, cardY + 10 * popupScale, `+${item.effectValue} ${item.effectType.toUpperCase()}`, {
+                fontSize: `${Math.floor(12 * popupScale)}px`,
+                color: '#a0a0a0', fontFamily: '"Exo 2", Arial', align: 'center'
+            }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
-            const buyBtn = this.add.rectangle(x, y + 60, 120, 35, 0x4caf50)
+            const buyBtnW = 130 * popupScale;
+            const buyBtnH = 36 * popupScale;
+            const buyBtn = this.add.rectangle(cardX, cardY + 72 * popupScale, buyBtnW, buyBtnH, 0x4caf50)
+                .setScrollFactor(0).setDepth(202)
                 .setInteractive({ useHandCursor: true })
-                .setScrollFactor(0)
-                .setDepth(101);
-                
-            const buyTxt = this.add.text(x, y + 60, `${item.cost} Anime`, {
-                fontSize: '16px', color: '#ffffff', fontStyle: 'bold', fontFamily: 'Arial'
-            }).setOrigin(0.5).setScrollFactor(0).setDepth(101);
+                .on('pointerover', () => { if (buyBtn.input?.enabled) buyBtn.setFillStyle(0x66bb6a); })
+                .on('pointerout', () => { if (buyBtn.input?.enabled) buyBtn.setFillStyle(0x4caf50); });
+
+            const buyTxt = this.add.text(cardX, cardY + 72 * popupScale, `${item.cost} 💀`, {
+                fontSize: `${Math.floor(15 * popupScale)}px`,
+                color: '#ffffff', fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+            }).setOrigin(0.5).setScrollFactor(0).setDepth(202);
 
             buyBtn.on('pointerdown', async () => {
                 const success = await this.buyItem(item.id);
@@ -188,11 +241,25 @@ export class MapScene extends Scene {
                 }
             });
 
-            elements.push(card, nameTxt, rarityTxt, effectTxt, buyBtn, buyTxt);
+            allElements.push(card, nameTxt, rarityTxt, effectTxt, buyBtn, buyTxt);
+
+            // Register position functions for this card's elements
+            positionFns.push(
+                (w, h, s) => { const ox = (index - 1) * 190 * s; card.setPosition(w / 2 + ox, h / 2 + 10); card.setSize(170 * s, 210 * s); },
+                (w, h, s) => { const ox = (index - 1) * 190 * s; nameTxt.setPosition(w / 2 + ox, h / 2 + 10 - 72 * s); },
+                (w, h, s) => { const ox = (index - 1) * 190 * s; rarityTxt.setPosition(w / 2 + ox, h / 2 + 10 - 30 * s); },
+                (w, h, s) => { const ox = (index - 1) * 190 * s; effectTxt.setPosition(w / 2 + ox, h / 2 + 10 + 10 * s); },
+                (w, h, s) => { const ox = (index - 1) * 190 * s; buyBtn.setPosition(w / 2 + ox, h / 2 + 10 + 72 * s); buyBtn.setSize(130 * s, 36 * s); },
+                (w, h, s) => { const ox = (index - 1) * 190 * s; buyTxt.setPosition(w / 2 + ox, h / 2 + 10 + 72 * s); },
+            );
         });
 
+        // Store so updateLayout can call them on resize
+        this.popupPositionFns = positionFns;
+
         const cleanup = () => {
-            elements.forEach(e => e.destroy());
+            allElements.forEach(e => e.destroy());
+            this.popupPositionFns = [];
         };
     }
 
@@ -311,8 +378,9 @@ export class MapScene extends Scene {
         this.playerMarker = this.add.circle(startNode.x, startNode.y, 15, 0x00bcd4);
 
         const maxNodeX = this.nodes[this.nodes.length - 1]!.x;
-        this.cameras.main.setBounds(0, 0, maxNodeX + 500, this.scale.height);
-        this.cameras.main.centerOn(this.playerMarker.x, this.scale.height / 2);
+        // Wide vertical bounds so resize never shows black bars
+        this.cameras.main.setBounds(0, -9999, maxNodeX + 500, 99999);
+        this.cameras.main.centerOn(this.playerMarker.x, this.nodes[0]!.y);
 
         // Abilita lo scroll libero della mappa
         this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
@@ -370,7 +438,7 @@ export class MapScene extends Scene {
                     }
                 }
             });
-            this.cameras.main.pan(targetNode.x, this.scale.height / 2, 500, 'Power2');
+            this.cameras.main.pan(targetNode.x, this.nodes[0]!.y, 500, 'Power2');
 
         } catch (err) {
             console.error("Errore nel consumo passi:", err);
