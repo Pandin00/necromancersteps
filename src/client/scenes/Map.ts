@@ -34,15 +34,15 @@ export class MapScene extends Scene {
     create() {
         this.cameras.main.setBackgroundColor('#2b2b2b');
 
-        this.titleText = this.add.text(this.scale.width / 2, 40, 'Mappa di Gioco', {
+        this.titleText = this.add.text(this.scale.width / 2, 40, 'Game Map', {
             fontSize: '28px', color: '#e94560', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0);
 
-        this.stepsText = this.add.text(this.scale.width / 2, 80, 'Caricamento Passi...', {
+        this.stepsText = this.add.text(this.scale.width / 2, 80, 'Loading Steps...', {
             fontSize: '22px', color: '#ffffff', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0);
 
-        this.soulsText = this.add.text(this.scale.width / 2, 110, 'Anime: 0', {
+        this.soulsText = this.add.text(this.scale.width / 2, 110, 'Souls: 0', {
             fontSize: '20px', color: '#9c27b0', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0);
 
@@ -57,31 +57,17 @@ export class MapScene extends Scene {
         this.fetchSteps().catch(console.error);
         this.fetchLeaderboard().catch(console.error);
         
-        const savedNodes = this.registry.get('mapNodes');
-        const savedIndex = this.registry.get('currentNodeIndex');
+        this.initializeMap().catch(console.error);
 
-        if (savedNodes) {
-            this.nodes = savedNodes;
-            this.currentNodeIndex = savedIndex || 0;
-        } else {
-            this.currentNodeIndex = 0;
-            this.generateMap();
-            this.registry.set('mapNodes', this.nodes);
-            this.registry.set('currentNodeIndex', this.currentNodeIndex);
-        }
-
-        this.drawMap();
-
-        // With RESIZE mode and no fixed dims, scale.width/height always equals
-        // the real viewport. Just sync camera size on resize.
+        // With RESIZE scale mode Phaser automatically keeps the main camera in
+        // sync with the canvas — no manual setSize/setPosition needed here.
+        // (Calling them manually was the cause of the black-screen glitch when
+        // the shop popup was open and the display mode changed.)
         this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
-            this.cameras.main.setSize(gameSize.width, gameSize.height);
-            this.cameras.main.setPosition(0, 0);
             this.updateLayout(gameSize.width, gameSize.height);
         });
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     updateLayout(width: number, _height: number) {
         if (this.titleText) this.titleText.setPosition(width / 2, 40);
         if (this.stepsText) this.stepsText.setPosition(width / 2, 80);
@@ -94,17 +80,64 @@ export class MapScene extends Scene {
         }
     }
 
+    async initializeMap() {
+        try {
+            const mapState = await trpc.getMapState.query();
+            if (mapState && mapState.nodes && mapState.nodes.length > 0) {
+                this.nodes = mapState.nodes;
+                this.currentNodeIndex = mapState.currentNodeIndex;
+                this.registry.set('stepsSinceLastShop', mapState.stepsSinceLastShop || 0);
+            } else {
+                const savedNodes = this.registry.get('mapNodes');
+                const savedIndex = this.registry.get('currentNodeIndex');
+
+                if (savedNodes) {
+                    this.nodes = savedNodes;
+                    this.currentNodeIndex = savedIndex || 0;
+                } else {
+                    this.currentNodeIndex = 0;
+                    this.generateMap();
+                }
+                
+                await this.saveMapState();
+            }
+            
+            this.registry.set('mapNodes', this.nodes);
+            this.registry.set('currentNodeIndex', this.currentNodeIndex);
+
+            this.drawMap();
+        } catch (e) {
+            console.error('Error initializing map:', e);
+            this.currentNodeIndex = 0;
+            this.generateMap();
+            this.drawMap();
+        }
+    }
+
+    async saveMapState() {
+        try {
+            await trpc.saveMapState.mutate({
+                nodes: this.nodes,
+                currentNodeIndex: this.currentNodeIndex,
+                stepsSinceLastShop: this.registry.get('stepsSinceLastShop') || 0
+            });
+        } catch (e) {
+            console.error('Failed to save map state:', e);
+        }
+    }
+
     async fetchSteps() {
         try {
             const state = await trpc.getState.query();
             this.currentSteps = state.stepsLeft;
             this.currentSouls = state.souls;
-            this.stepsText.setText(`Passi Residui: ${this.currentSteps} / ${state.maxSteps}`);
-            this.soulsText.setText(`Anime: ${this.currentSouls}`);
+            this.stepsText.setText(`Steps Left: ${this.currentSteps} / ${state.maxSteps}`);
+            this.soulsText.setText(`Souls: ${this.currentSouls}`);
             this.depthText.setText(`Depth: ${state.depth} (Max: ${state.maxDepth})`);
         } catch (err) {
             console.error("Errore passi:", err);
-            this.stepsText.setText('Errore caricamento passi');
+            const msg = (err as Error).message || String(err);
+            this.stepsText.setText(`Errore: ${msg}`);
         }
     }
 
@@ -118,7 +151,8 @@ export class MapScene extends Scene {
             this.leaderboardText.setText(text);
         } catch (err) {
             console.error(err);
-            this.leaderboardText.setText("Leaderboard offline");
+            const msg = (err as Error).message || String(err);
+            this.leaderboardText.setText(`Leaderboard offline: ${msg}`);
         }
     }
 
@@ -126,11 +160,11 @@ export class MapScene extends Scene {
         try {
             const res = await trpc.buyUpgrade.mutate({ itemId });
             this.currentSouls = res.souls;
-            this.soulsText.setText(`Anime: ${this.currentSouls}`);
-            alert(`Oggetto acquistato!`);
+            this.soulsText.setText(`Souls: ${this.currentSouls}`);
+            alert(`Item purchased!`);
             return true;
         } catch (err) {
-            alert(`Errore: ${(err as Error).message}`);
+            alert(`Error: ${(err as Error).message}`);
             return false;
         }
     }
@@ -152,11 +186,11 @@ export class MapScene extends Scene {
             .setStrokeStyle(3, 0xe94560)
             .setScrollFactor(0).setDepth(201);
 
-        const title = this.add.text(cx, cy - 175, '🧟 MERCANTE ERRANTE 🧟', {
+        const title = this.add.text(cx, cy - 175, '🧟 WANDERING MERCHANT 🧟', {
             fontSize: '22px', color: '#ffeb3b', fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
-        const subTitle = this.add.text(cx, cy - 148, 'Scegli fino a 3 oggetti', {
+        const subTitle = this.add.text(cx, cy - 148, 'Choose up to 3 items', {
             fontSize: '13px', color: '#888888', fontFamily: '"Exo 2", Arial'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
@@ -170,7 +204,7 @@ export class MapScene extends Scene {
                 this.resolveNodeEvent(targetNode).catch(console.error);
             });
 
-        const closeTxt = this.add.text(cx, cy + 180, 'Saluta e Vai', {
+        const closeTxt = this.add.text(cx, cy + 180, 'Say Goodbye and Leave', {
             fontSize: '17px', color: '#ffffff', fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
@@ -237,7 +271,7 @@ export class MapScene extends Scene {
                 if (success) {
                     buyBtn.disableInteractive();
                     buyBtn.setFillStyle(0x555555);
-                    buyTxt.setText('VENDUTO');
+                    buyTxt.setText('SOLD');
                 }
             });
 
@@ -393,22 +427,22 @@ export class MapScene extends Scene {
     async tryMoveToNode(targetIndex: number) {
         const currentNode = this.nodes[this.currentNodeIndex]!;
         if (!currentNode.nextNodes.includes(targetIndex)) {
-            console.log("Puoi muoverti solo ai nodi connessi al tuo nodo corrente.");
+            console.log("You can only move to nodes connected to your current node.");
             return;
         }
 
         if (this.isProcessingStep || this.currentSteps <= 0) {
-            console.log("Nessun passo residuo o azione in corso.");
+            console.log("No steps left or action in progress.");
             return;
         }
 
         this.isProcessingStep = true;
-        this.stepsText.setText('Consumo passo in corso...');
+        this.stepsText.setText('Spending step...');
         
         try {
             const state = await trpc.spendStep.mutate();
             this.currentSteps = state.stepsLeft;
-            this.stepsText.setText(`Passi Residui: ${this.currentSteps} / ${state.maxSteps}`);
+            this.stepsText.setText(`Steps Left: ${this.currentSteps} / ${state.maxSteps}`);
             
             // Movimento riuscito
             this.currentNodeIndex = targetIndex;
@@ -428,12 +462,14 @@ export class MapScene extends Scene {
                 y: targetNode.y,
                 duration: 500,
                 ease: 'Power2',
-                onComplete: () => {
+                onComplete: async () => {
                     if (stepsSinceLastShop >= 5) {
                         this.registry.set('stepsSinceLastShop', 0);
+                        await this.saveMapState();
                         this.showShopPopup(targetNode);
                     } else {
                         this.registry.set('stepsSinceLastShop', stepsSinceLastShop);
+                        await this.saveMapState();
                         this.resolveNodeEvent(targetNode).catch(console.error);
                     }
                 }
@@ -442,7 +478,7 @@ export class MapScene extends Scene {
 
         } catch (err) {
             console.error("Errore nel consumo passi:", err);
-            this.stepsText.setText(`Errore: ${(err as Error).message || 'Riprova'}`);
+            this.stepsText.setText(`Error: ${(err as Error).message || 'Try again'}`);
         } finally {
             this.isProcessingStep = false;
         }
@@ -457,8 +493,8 @@ export class MapScene extends Scene {
             try {
                 const res = await trpc.gainSouls.mutate({ amount: 20 });
                 this.currentSouls = res.souls;
-                this.soulsText.setText(`Anime: ${this.currentSouls}`);
-                alert("Hai trovato un tesoro! +20 Anime!");
+                this.soulsText.setText(`Souls: ${this.currentSouls}`);
+                alert("You found a treasure! +20 Souls!");
             } catch (err) {
                 console.error("Errore tesoro:", err);
             }

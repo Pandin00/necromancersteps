@@ -14,7 +14,16 @@ export const publicProcedure = t.procedure;
 
 const MAX_STEPS = 100;
 
-export type MinionType = 'SKELETON' | 'GOLEM' | 'MAGE';
+async function getUserId() {
+  try {
+    const username = await reddit.getCurrentUsername();
+    return username ?? 'anonymous';
+  } catch (e) {
+    return 'anonymous';
+  }
+}
+
+export type MinionType = 'SKELETON' | 'GOLEM' | 'MAGE' | 'ARCHER' | 'ZOMBIE' | 'GHOST';
 
 export interface Minion {
   id: string;
@@ -31,6 +40,18 @@ const MAGE_KEYWORDS = [
   'maledizione', 'curse', 'maldición', 'malédiction'
 ];
 
+const ARCHER_KEYWORDS = [
+  'arco', 'bow', 'freccia', 'arrow', 'shoot', 'arciere', 'archer'
+];
+
+const ZOMBIE_KEYWORDS = [
+  'zombie', 'cervelli', 'brains', 'morto', 'undead', 'zombi'
+];
+
+const GHOST_KEYWORDS = [
+  'fantasma', 'ghost', 'spettro', 'spectre', 'boo'
+];
+
 export const appRouter = router({
   ping: publicProcedure.query(() => {
     return {
@@ -40,8 +61,7 @@ export const appRouter = router({
 
   // Ottiene lo stato del giocatore (passi residui e upgrades)
   getState: publicProcedure.query(async () => {
-    const username = await reddit.getCurrentUsername();
-    const userId = username ?? 'anonymous';
+    const userId = await getUserId();
     const redisKey = `steps:${userId}`;
     const soulsKey = `souls:${userId}`;
     const depthKey = `depth:${userId}`;
@@ -84,8 +104,7 @@ export const appRouter = router({
 
   // Consuma un passo (verrà usato quando ci si muove sulla mappa)
   spendStep: publicProcedure.mutation(async () => {
-    const username = await reddit.getCurrentUsername();
-    const userId = username ?? 'anonymous';
+    const userId = await getUserId();
     const redisKey = `steps:${userId}`;
 
     const stepsStr = await redis.get(redisKey);
@@ -94,7 +113,7 @@ export const appRouter = router({
     if (steps <= 0) {
       throw new TRPCError({
         code: 'FORBIDDEN',
-        message: 'Non hai più passi per oggi!',
+        message: 'You have no steps left for today!',
       });
     }
 
@@ -112,8 +131,7 @@ export const appRouter = router({
   gainSouls: publicProcedure
     .input(z.object({ amount: z.number().int().positive() }))
     .mutation(async ({ input }) => {
-      const username = await reddit.getCurrentUsername();
-      const userId = username ?? 'anonymous';
+      const userId = await getUserId();
       const soulsKey = `souls:${userId}`;
 
       // Calcola bonus dal Soul Catcher (+50% per livello)
@@ -134,8 +152,7 @@ export const appRouter = router({
 
   // Incrementa la depth quando il giocatore vince un nodo battaglia
   winBattle: publicProcedure.mutation(async () => {
-      const username = await reddit.getCurrentUsername();
-      const userId = username ?? 'anonymous';
+      const userId = await getUserId();
       const depthKey = `depth:${userId}`;
       const maxDepthKey = `maxDepth:${userId}`;
 
@@ -160,8 +177,7 @@ export const appRouter = router({
 
   // Resetta progressione quando il giocatore muore
   die: publicProcedure.mutation(async () => {
-      const username = await reddit.getCurrentUsername();
-      const userId = username ?? 'anonymous';
+      const userId = await getUserId();
       const depthKey = `depth:${userId}`;
       const soulsKey = `souls:${userId}`;
 
@@ -175,6 +191,9 @@ export const appRouter = router({
       await redis.set(`upgrade:${userId}:soulCatcher`, '0');
       await redis.set(`upgrade:${userId}:boneArmor`, '0');
       await redis.set(`upgrade:${userId}:armySize`, '0');
+
+      // Reset map state
+      await redis.del(`mapState:${userId}`);
 
       return { success: true, depth: 0 };
   }),
@@ -202,12 +221,11 @@ export const appRouter = router({
       if (!item) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: 'Oggetto non valido',
+          message: 'Invalid item',
         });
       }
 
-      const username = await reddit.getCurrentUsername();
-      const userId = username ?? 'anonymous';
+      const userId = await getUserId();
       const soulsKey = `souls:${userId}`;
       const upgradeKey = `upgrade:${userId}:${item.effectType}`;
 
@@ -217,7 +235,7 @@ export const appRouter = router({
       if (souls < item.cost) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: `Non hai abbastanza Anime! Te ne servono ${item.cost}.`,
+          message: `Not enough Souls! You need ${item.cost}.`,
         });
       }
 
@@ -230,6 +248,40 @@ export const appRouter = router({
       await redis.set(upgradeKey, currentUpgrade.toString());
 
       return { success: true, souls, currentUpgrade };
+  }),
+
+  // Salva l'ordine dell'armata
+  saveArmyOrder: publicProcedure
+    .input(z.object({ order: z.array(z.string()) }))
+    .mutation(async ({ input }) => {
+      const userId = await getUserId();
+      await redis.set(`armyOrder:${userId}`, JSON.stringify(input.order));
+      return { success: true };
+  }),
+
+  getMapState: publicProcedure.query(async () => {
+    const userId = await getUserId();
+    const mapStateStr = await redis.get(`mapState:${userId}`);
+    if (mapStateStr) {
+      try {
+        return JSON.parse(mapStateStr);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }),
+
+  saveMapState: publicProcedure
+    .input(z.object({
+      nodes: z.array(z.any()),
+      currentNodeIndex: z.number(),
+      stepsSinceLastShop: z.number().optional()
+    }))
+    .mutation(async ({ input }) => {
+      const userId = await getUserId();
+      await redis.set(`mapState:${userId}`, JSON.stringify(input));
+      return { success: true };
   }),
 
   // Legge i commenti dal post e li trasforma in Minions
@@ -246,8 +298,7 @@ export const appRouter = router({
     }
 
     try {
-      const username = await reddit.getCurrentUsername();
-      const userId = username ?? 'anonymous';
+      const userId = await getUserId();
       
       // Carica i potenziamenti del giocatore
       const hpBonusStr = await redis.get(`upgrade:${userId}:hp`);
@@ -281,6 +332,9 @@ export const appRouter = router({
         let hasBoneArmor = false;
 
         const isMage = MAGE_KEYWORDS.some(kw => lowerText.includes(kw));
+        const isArcher = ARCHER_KEYWORDS.some(kw => lowerText.includes(kw));
+        const isZombie = ZOMBIE_KEYWORDS.some(kw => lowerText.includes(kw));
+        const isGhost = GHOST_KEYWORDS.some(kw => lowerText.includes(kw));
 
         if (words > 40) {
           type = 'GOLEM';
@@ -291,6 +345,18 @@ export const appRouter = router({
           type = 'MAGE';
           hp = 8;
           attack = 6;
+        } else if (isArcher) {
+          type = 'ARCHER';
+          hp = 6;
+          attack = 4;
+        } else if (isGhost) {
+          type = 'GHOST';
+          hp = 4;
+          attack = 8;
+        } else if (isZombie) {
+          type = 'ZOMBIE';
+          hp = 20;
+          attack = 1;
         } else {
           // Standard skeleton
           type = 'SKELETON';
@@ -311,6 +377,23 @@ export const appRouter = router({
       // Se non ci sono commenti, dai un paio di minion gratuiti
       if (minions.length === 0) {
         minions.push({ id: 'free1', type: 'SKELETON', author: 'System', hp: 10, attack: 2 });
+      }
+
+      const orderStr = await redis.get(`armyOrder:${userId}`);
+      if (orderStr) {
+        try {
+           const order: string[] = JSON.parse(orderStr);
+           minions.sort((a, b) => {
+              const indexA = order.indexOf(a.id);
+              const indexB = order.indexOf(b.id);
+              if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+              if (indexA !== -1) return -1;
+              if (indexB !== -1) return 1;
+              return 0;
+           });
+        } catch (e) {
+           console.error('Error parsing army order', e);
+        }
       }
 
       return minions;
