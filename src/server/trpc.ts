@@ -13,6 +13,33 @@ export const router = t.router;
 export const publicProcedure = t.procedure;
 
 const MAX_STEPS = 100;
+const RESET_HOUR_UTC = 0; // L'ora (in UTC) in cui si resettano i passi (es. 0 = Mezzanotte UTC)
+
+async function refreshStepsIfNeeded(userId: string): Promise<string> {
+  const redisKey = `steps:${userId}`;
+  const lastRefreshKey = `lastRefresh:${userId}`;
+  
+  let steps = await redis.get(redisKey);
+  const lastRefresh = await redis.get(lastRefreshKey);
+  
+  const now = new Date();
+  
+  // Calculate the "current day" string based on the reset hour.
+  // If the current hour is less than the reset hour, we consider it the previous day.
+  const resetDate = new Date(now);
+  if (now.getUTCHours() < RESET_HOUR_UTC) {
+    resetDate.setUTCDate(now.getUTCDate() - 1);
+  }
+  const currentDay = resetDate.toISOString().split('T')[0];
+  
+  if (lastRefresh !== currentDay || steps === undefined) {
+    await redis.set(redisKey, MAX_STEPS.toString());
+    await redis.set(lastRefreshKey, currentDay);
+    steps = MAX_STEPS.toString();
+  }
+  
+  return steps;
+}
 
 async function getUserId() {
   try {
@@ -32,6 +59,7 @@ export interface Minion {
   hp: number;
   attack: number;
   hasBoneArmor?: boolean;
+  gridIndex?: number;
 }
 
 const MAGE_KEYWORDS = [
@@ -62,21 +90,16 @@ export const appRouter = router({
   // Ottiene lo stato del giocatore (passi residui e upgrades)
   getState: publicProcedure.query(async () => {
     const userId = await getUserId();
-    const redisKey = `steps:${userId}`;
     const soulsKey = `souls:${userId}`;
     const depthKey = `depth:${userId}`;
     const maxDepthKey = `maxDepth:${userId}`;
     
-    let steps = await redis.get(redisKey);
+    const steps = await refreshStepsIfNeeded(userId);
     let souls = await redis.get(soulsKey);
     const depthStr = await redis.get(depthKey);
     const maxDepthStr = await redis.get(maxDepthKey);
     
     // Inizializza se non esiste
-    if (steps === undefined) {
-      await redis.set(redisKey, MAX_STEPS.toString());
-      steps = MAX_STEPS.toString();
-    }
     if (souls === undefined) {
       souls = '0';
     }
@@ -107,8 +130,8 @@ export const appRouter = router({
     const userId = await getUserId();
     const redisKey = `steps:${userId}`;
 
-    const stepsStr = await redis.get(redisKey);
-    let steps = stepsStr ? parseInt(stepsStr, 10) : MAX_STEPS;
+    const stepsStr = await refreshStepsIfNeeded(userId);
+    let steps = parseInt(stepsStr, 10);
 
     if (steps <= 0) {
       throw new TRPCError({
@@ -252,7 +275,7 @@ export const appRouter = router({
 
   // Salva l'ordine dell'armata
   saveArmyOrder: publicProcedure
-    .input(z.object({ order: z.array(z.string()) }))
+    .input(z.object({ order: z.record(z.string(), z.number()) }))
     .mutation(async ({ input }) => {
       const userId = await getUserId();
       await redis.set(`armyOrder:${userId}`, JSON.stringify(input.order));
@@ -382,14 +405,11 @@ export const appRouter = router({
       const orderStr = await redis.get(`armyOrder:${userId}`);
       if (orderStr) {
         try {
-           const order: string[] = JSON.parse(orderStr);
-           minions.sort((a, b) => {
-              const indexA = order.indexOf(a.id);
-              const indexB = order.indexOf(b.id);
-              if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-              if (indexA !== -1) return -1;
-              if (indexB !== -1) return 1;
-              return 0;
+           const order: Record<string, number> = JSON.parse(orderStr);
+           minions.forEach(m => {
+               if (order[m.id] !== undefined) {
+                   m.gridIndex = order[m.id];
+               }
            });
         } catch (e) {
            console.error('Error parsing army order', e);

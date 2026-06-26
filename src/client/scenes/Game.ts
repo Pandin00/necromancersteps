@@ -9,6 +9,13 @@ type RenderedUnit = {
     rect: Phaser.GameObjects.Rectangle;
     hpText: Phaser.GameObjects.Text;
     label: Phaser.GameObjects.Text;
+    isDead: boolean;
+    range: number;
+    speed: number;
+    cooldown: number;
+    lastAttackTime: number;
+    maxHp: number;
+    isEnemy: boolean;
 };
 
 export class Game extends Scene {
@@ -145,16 +152,28 @@ export class Game extends Scene {
       this.playerArmy.forEach(u => u.container.destroy());
       this.playerArmy = [];
 
+      // Pulisci vecchie armate nemiche
+      this.enemyArmy.forEach(u => u.container.destroy());
+      this.enemyArmy = [];
+
       this.benchedMinions = playerData.slice(armySizeLimit);
 
-      // Popola Player Army (da sinistra verso destra, il primo è a destra)
-      playerData.slice(0, armySizeLimit).forEach((data, index) => {
-          this.playerArmy.push(this.createUnit(data, index, false));
+      // Assegna gridIndex se mancante
+      const usedIndices = new Set(playerData.slice(0, armySizeLimit).map(d => d.gridIndex).filter(i => i !== undefined));
+      let nextFreeIndex = 0;
+
+      // Popola Player Army
+      playerData.slice(0, armySizeLimit).forEach((data) => {
+          if (data.gridIndex === undefined || data.gridIndex >= 15) {
+              while (usedIndices.has(nextFreeIndex)) nextFreeIndex++;
+              data.gridIndex = nextFreeIndex;
+              usedIndices.add(nextFreeIndex);
+          }
+          this.playerArmy.push(this.createUnit(data, data.gridIndex, false));
       });
 
       // Generazione Procedurale Nemici basata su Depth e Passi
-      if (this.enemyArmy.length === 0) {
-          const enemyData: Minion[] = [];
+      const enemyData: Minion[] = [];
       
       // La difficoltà scala sia per le vittorie (depth) sia in base a quanto si è camminato sulla mappa (steps)
       const difficulty = depth + (stepsTaken * 0.2);
@@ -224,14 +243,14 @@ export class Game extends Scene {
       }
 
           enemyData.forEach((data, index) => {
-              const unit = this.createUnit(data, index, true);
+              data.gridIndex = index;
+              const unit = this.createUnit(data, data.gridIndex, true);
               if (data.author === 'MEGA HERO') {
                   unit.container.setScale(1.5);
                   unit.rect.setFillStyle(0xff0000).setStrokeStyle(4, 0xffaa00);
               }
               this.enemyArmy.push(unit);
           });
-      }
   }
 
   getUnitPosition(index: number, isEnemy: boolean, width: number, height: number) {
@@ -293,6 +312,28 @@ export class Game extends Scene {
           container.on('dragend', () => {
               if (this.isFighting) return;
               container.setDepth(0);
+
+              // Trova la casella più vicina
+              let bestIndex = -1;
+              let minDistance = Infinity;
+              for (let i = 0; i < 15; i++) {
+                  const p = this.getUnitPosition(i, false, this.scale.width, this.scale.height);
+                  const dist = Phaser.Math.Distance.Between(container.x, container.y, p.x, p.y);
+                  if (dist < minDistance) {
+                      minDistance = dist;
+                      bestIndex = i;
+                  }
+              }
+
+              // Scambia con l'unità esistente
+              if (bestIndex !== -1) {
+                  const existingUnit = this.playerArmy.find(u => u.data.gridIndex === bestIndex);
+                  if (existingUnit && existingUnit.data.id !== data.id) {
+                      existingUnit.data.gridIndex = data.gridIndex;
+                  }
+                  data.gridIndex = bestIndex;
+              }
+
               this.reorderArmy();
           });
       }
@@ -302,23 +343,39 @@ export class Game extends Scene {
           container.add(shield);
       }
 
-      return { data, container, rect, hpText, label };
+      const stats = this.getUnitCombatStats(data.type);
+
+      return { 
+          data, container, rect, hpText, label,
+          isDead: false,
+          range: stats.range,
+          speed: stats.speed,
+          cooldown: stats.cooldown,
+          lastAttackTime: 0,
+          maxHp: data.hp,
+          isEnemy
+      };
   }
 
   reorderArmy() {
-      // Per il player: X maggiore = più vicino al fronte = primo in coda.
-      this.playerArmy.sort((a, b) => {
-          if (Math.abs(b.container.x - a.container.x) > 20) {
-              return b.container.x - a.container.x;
-          }
-          return a.container.y - b.container.y;
+      // Posiziona le unità nella loro casella corrente (data.gridIndex)
+      this.playerArmy.forEach(unit => {
+          const pos = this.getUnitPosition(unit.data.gridIndex!, false, this.scale.width, this.scale.height);
+          this.tweens.add({
+              targets: unit.container,
+              x: pos.x,
+              y: pos.y,
+              duration: 300,
+              ease: 'Power1'
+          });
       });
-      this.shiftArmy(this.playerArmy, false);
 
-      const newActiveOrder = this.playerArmy.map(u => u.data);
-      this.allPlayerMinions = [...newActiveOrder, ...this.benchedMinions];
-
-      const order = this.allPlayerMinions.map(u => u.id);
+      const order: Record<string, number> = {};
+      this.allPlayerMinions.forEach(u => {
+          if (u.gridIndex !== undefined) {
+              order[u.id] = u.gridIndex;
+          }
+      });
       trpc.saveArmyOrder.mutate({ order }).catch(console.error);
   }
 
@@ -362,130 +419,140 @@ export class Game extends Scene {
     this.fightText.setVisible(false);
     this.benchButton.setVisible(false);
     this.benchText.setVisible(false);
-
-    // Inizia ciclo di attacchi
-    this.executeAttackCycle();
   }
 
-  executeAttackCycle() {
-      // Condizioni di fine battaglia
-      if (this.playerArmy.length === 0) {
-          this.endBattle('You Lost Your Army...');
-          return;
-      }
-      if (this.enemyArmy.length === 0) {
-          this.endBattle('VICTORY!');
-          return;
-      }
-
-      // Attacca il giocatore
-      const playerFront = this.playerArmy[0]!;
-      const enemyFront = this.enemyArmy[0]!;
+  getUnitCombatStats(type: string): { range: number, speed: number, cooldown: number, isRanged: boolean } {
+      const rangedTypes = ['MAGE', 'ARCHER', 'GHOST', 'PRIEST', 'RANGER'];
+      const isRanged = rangedTypes.includes(type);
       
-      const playerMages = this.playerArmy.filter((u, idx) => idx > 0 && (u.data.type === 'MAGE' || u.data.type === 'ARCHER'));
-      const playerDistanceDmg = playerMages.reduce((sum, m) => sum + m.data.attack, 0);
+      if (isRanged) {
+          return { range: 250 + Math.random() * 50, speed: 20 + Math.random() * 10, cooldown: 1200 + Math.random() * 500, isRanged: true };
+      } else {
+          return { range: 60, speed: 60 + Math.random() * 20, cooldown: 1000 + Math.random() * 200, isRanged: false };
+      }
+  }
 
-      playerMages.forEach(mage => {
-          this.tweens.add({ targets: mage.container, y: mage.container.y - 10, duration: 100, yoyo: true });
-      });
+  update(time: number, delta: number) {
+      if (!this.isFighting) return;
 
-      // Animazione attacco player
-      this.tweens.add({
-          targets: playerFront.container,
-          x: enemyFront.container.x - 50,
-          y: enemyFront.container.y,
-          duration: 200,
-          yoyo: true,
-          ease: 'Power2',
-          onYoyo: () => {
-              this.cameras.main.shake(100, 0.005);
+      const activePlayerUnits = this.playerArmy.filter(u => !u.isDead);
+      const activeEnemyUnits = this.enemyArmy.filter(u => !u.isDead);
+
+      if (activePlayerUnits.length === 0) {
+          this.endBattle('You Lost Your Army...');
+          this.isFighting = false;
+          return;
+      }
+      if (activeEnemyUnits.length === 0) {
+          this.endBattle('VICTORY!');
+          this.isFighting = false;
+          return;
+      }
+
+      const allActiveUnits = [...activePlayerUnits, ...activeEnemyUnits];
+
+      allActiveUnits.forEach(unit => {
+          if (unit.isDead) return;
+
+          // Find closest target
+          const enemies = unit.isEnemy ? activePlayerUnits : activeEnemyUnits;
+          let closestTarget: RenderedUnit | null = null;
+          let minDistance = Infinity;
+
+          enemies.forEach(enemy => {
+              const dist = Phaser.Math.Distance.Between(unit.container.x, unit.container.y, enemy.container.x, enemy.container.y);
+              if (dist < minDistance) {
+                  minDistance = dist;
+                  closestTarget = enemy;
+              }
+          });
+
+          if (!closestTarget) return;
+
+          if (minDistance > unit.range) {
+              // Move towards target
+              const angle = Phaser.Math.Angle.Between(unit.container.x, unit.container.y, closestTarget.container.x, closestTarget.container.y);
+              const moveDist = (unit.speed * delta) / 1000;
+              unit.container.x += Math.cos(angle) * moveDist;
+              unit.container.y += Math.sin(angle) * moveDist;
               
-              let damageToEnemy = playerFront.data.attack + playerDistanceDmg;
-              
-              if (enemyFront.data.hasBoneArmor) {
-                  enemyFront.data.hasBoneArmor = false;
-                  damageToEnemy = 0;
-                  const shield = enemyFront.container.getByName('shield');
-                  if (shield) shield.destroy();
-                  this.showFloatingText(enemyFront.container.x, enemyFront.container.y - 40, 'SHIELD!', '#ffffff');
+              // Small bouncing animation for walking
+              if (time % 200 < 100 && unit.container.y % 2 !== -5) {
+                  unit.container.y -= 1;
               } else {
-                  this.showFloatingText(enemyFront.container.x, enemyFront.container.y - 40, `-${damageToEnemy}`, '#ff0000');
+                  unit.container.y += 1;
               }
-              
-              // Applica Danno
-              enemyFront.data.hp -= damageToEnemy;
-              this.updateUnitUI(enemyFront);
-
-              if (enemyFront.data.hp <= 0) {
-                  // Nemico morto
-                  this.killUnit(this.enemyArmy, 0, true);
+          } else {
+              // Attack if cooldown allows
+              if (time > unit.lastAttackTime + unit.cooldown) {
+                  unit.lastAttackTime = time;
+                  this.performAttack(unit, closestTarget);
               }
-          },
-          onComplete: () => {
-              if (this.enemyArmy.length === 0) {
-                  this.executeAttackCycle(); // controllerà la vittoria
-                  return;
-              }
-
-              // Risposta del nemico (se ancora vivo)
-              const currentEnemyFront = this.enemyArmy[0]!;
-              this.time.delayedCall(150, () => {
-                  this.enemyCounterAttack(currentEnemyFront, playerFront);
-              });
           }
       });
   }
 
-  enemyCounterAttack(enemyFront: RenderedUnit, playerFront: RenderedUnit) {
-      const enemyMages = this.enemyArmy.filter((u, idx) => idx > 0 && (u.data.type === 'PRIEST' || u.data.type === 'RANGER'));
-      const enemyDistanceDmg = enemyMages.reduce((sum, m) => sum + m.data.attack, 0);
-
-      enemyMages.forEach(mage => {
-          this.tweens.add({ targets: mage.container, y: mage.container.y - 10, duration: 100, yoyo: true });
-      });
-
-      this.tweens.add({
-          targets: enemyFront.container,
-          x: playerFront.container.x + 50,
-          y: playerFront.container.y,
-          duration: 200,
-          yoyo: true,
-          ease: 'Power2',
-          onYoyo: () => {
-              this.cameras.main.shake(100, 0.005);
-              
-              let damageToPlayer = enemyFront.data.attack + enemyDistanceDmg;
-              
-              if (playerFront.data.hasBoneArmor) {
-                  playerFront.data.hasBoneArmor = false;
-                  damageToPlayer = 0;
-                  const shield = playerFront.container.getByName('shield');
-                  if (shield) shield.destroy();
-                  this.showFloatingText(playerFront.container.x, playerFront.container.y - 40, 'SHIELD!', '#ffffff');
-              } else {
-                  this.showFloatingText(playerFront.container.x, playerFront.container.y - 40, `-${damageToPlayer}`, '#ff0000');
+  performAttack(attacker: RenderedUnit, target: RenderedUnit) {
+      const stats = this.getUnitCombatStats(attacker.data.type);
+      
+      if (stats.isRanged) {
+          // Fire projectile
+          const projectile = this.add.circle(attacker.container.x, attacker.container.y, 6, this.getColorForType(attacker.data.type, attacker.isEnemy));
+          projectile.setDepth(150);
+          
+          this.tweens.add({
+              targets: projectile,
+              x: target.container.x,
+              y: target.container.y,
+              duration: 250,
+              ease: 'Linear',
+              onComplete: () => {
+                  projectile.destroy();
+                  if (!target.isDead) {
+                      this.applyDamage(attacker, target);
+                  }
               }
-              
-              // Applica Danno
-              playerFront.data.hp -= damageToPlayer;
-              this.updateUnitUI(playerFront);
-
-              if (playerFront.data.hp <= 0) {
-                  // Player morto
-                  this.killUnit(this.playerArmy, 0, false);
+          });
+      } else {
+          // Melee attack animation
+          this.tweens.add({
+              targets: attacker.container,
+              x: attacker.container.x + (target.container.x > attacker.container.x ? 20 : -20),
+              duration: 100,
+              yoyo: true,
+              ease: 'Power2',
+              onYoyo: () => {
+                  if (!target.isDead) {
+                      this.applyDamage(attacker, target);
+                  }
               }
-          },
-          onComplete: () => {
-              // Turno finito, il ciclo ricomincia
-              this.time.delayedCall(300, () => {
-                  this.executeAttackCycle();
-              });
-          }
-      });
+          });
+      }
+  }
+
+  applyDamage(attacker: RenderedUnit, target: RenderedUnit) {
+      let damage = attacker.data.attack;
+      
+      if (target.data.hasBoneArmor) {
+          target.data.hasBoneArmor = false;
+          damage = 0;
+          const shield = target.container.getByName('shield');
+          if (shield) shield.destroy();
+          this.showFloatingText(target.container.x, target.container.y - 40, 'SHIELD!', '#ffffff');
+      } else {
+          this.showFloatingText(target.container.x, target.container.y - 40, `-${damage}`, '#ff0000');
+      }
+      
+      target.data.hp -= damage;
+      this.updateUnitUI(target);
+
+      if (target.data.hp <= 0 && !target.isDead) {
+          this.killUnit(target);
+      }
   }
 
   showFloatingText(x: number, y: number, msg: string, color: string) {
-      const txt = this.add.text(x, y, msg, { fontSize: '20px', color: color, fontStyle: 'bold' }).setOrigin(0.5);
+      const txt = this.add.text(x, y, msg, { fontSize: '20px', color: color, fontStyle: 'bold' }).setOrigin(0.5).setDepth(200);
       this.tweens.add({
           targets: txt,
           y: y - 40,
@@ -498,42 +565,33 @@ export class Game extends Scene {
   updateUnitUI(unit: RenderedUnit) {
       unit.data.hp = Math.max(0, unit.data.hp);
       unit.hpText.setText(`HP: ${unit.data.hp}`);
+      
+      if (unit.data.hp < unit.maxHp * 0.3) {
+          unit.hpText.setColor('#ff0000');
+      }
   }
 
-  killUnit(army: RenderedUnit[], index: number, isEnemy: boolean) {
-      const deadUnit = army.splice(index, 1)[0];
-      if (!deadUnit) return;
+  killUnit(unit: RenderedUnit) {
+      unit.isDead = true;
+      unit.container.disableInteractive();
       
-      if (isEnemy) {
-          // Guadagna anime in base al nemico
-          this.soulsEarned += (deadUnit.data.type === 'KNIGHT' || deadUnit.data.type === 'PALADIN' || deadUnit.data.type === 'HERO') ? 3 : 1;
+      if (unit.isEnemy) {
+          this.soulsEarned += (unit.data.type === 'KNIGHT' || unit.data.type === 'PALADIN' || unit.data.type === 'HERO') ? 3 : 1;
       }
       
-      // Animazione morte
       this.tweens.add({
-          targets: deadUnit.container,
+          targets: unit.container,
           alpha: 0,
           scale: 0.5,
-          duration: 300,
+          angle: 90,
+          duration: 400,
           onComplete: () => {
-              deadUnit.container.destroy();
-              this.shiftArmy(army, isEnemy);
+              unit.container.setVisible(false);
           }
       });
   }
 
-  shiftArmy(army: RenderedUnit[], isEnemy: boolean) {
-      army.forEach((unit, index) => {
-          const pos = this.getUnitPosition(index, isEnemy, this.scale.width, this.scale.height);
-          this.tweens.add({
-              targets: unit.container,
-              x: pos.x,
-              y: pos.y,
-              duration: 300,
-              ease: 'Power1'
-          });
-      });
-  }
+
 
   endBattle(message: string) {
     if (this.soulsEarned > 0) {
@@ -547,6 +605,7 @@ export class Game extends Scene {
         trpc.die.mutate().catch(console.error);
         this.registry.remove('mapNodes');
         this.registry.remove('currentNodeIndex');
+        this.registry.remove('stepsSinceLastShop');
     }
 
     this.add.text(this.scale.width / 2, this.scale.height - 150, message, {

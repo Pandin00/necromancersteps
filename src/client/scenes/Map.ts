@@ -101,6 +101,7 @@ export class MapScene extends Scene {
                     this.currentNodeIndex = savedIndex || 0;
                 } else {
                     this.currentNodeIndex = 0;
+                    this.registry.set('stepsSinceLastShop', 0);
                     this.generateMap();
                 }
                 
