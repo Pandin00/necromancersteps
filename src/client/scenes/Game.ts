@@ -36,9 +36,9 @@ export class Game extends Scene {
   private currentStepsTaken: number = 0;
   private isBossBattle: boolean = false;
 
-  private benchContainer?: Phaser.GameObjects.Container;
-  private selectedBenchUnit?: Minion;
-  private selectedActiveUnit?: Minion;
+  private benchContainer?: Phaser.GameObjects.Container | undefined;
+  private selectedBenchUnit?: Minion | undefined;
+  private selectedActiveUnit?: Minion | undefined;
 
   constructor() {
     super('Game');
@@ -163,22 +163,22 @@ export class Game extends Scene {
           // Mega Boss
           enemyData.push({
               id: 'boss1',
-              type: 'GOLEM',
-              author: 'MEGA BOSS',
+              type: 'HERO',
+              author: 'MEGA HERO',
               hp: Math.floor(100 + (difficulty * 20)),
               attack: Math.floor(10 + (difficulty * 2)),
               hasBoneArmor: true
           });
           // Aggiungiamo un paio di minion di supporto
-          enemyData.push({ id: 'supp1', type: 'MAGE', author: 'Cultist', hp: Math.floor(20 + difficulty*2), attack: Math.floor(5 + difficulty), hasBoneArmor: false });
-          enemyData.push({ id: 'supp2', type: 'MAGE', author: 'Cultist', hp: Math.floor(20 + difficulty*2), attack: Math.floor(5 + difficulty), hasBoneArmor: false });
+          enemyData.push({ id: 'supp1', type: 'PRIEST', author: 'Acolyte', hp: Math.floor(20 + difficulty*2), attack: Math.floor(5 + difficulty), hasBoneArmor: false });
+          enemyData.push({ id: 'supp2', type: 'PRIEST', author: 'Acolyte', hp: Math.floor(20 + difficulty*2), attack: Math.floor(5 + difficulty), hasBoneArmor: false });
       } else {
           // Battaglia standard: curva di difficoltà progressiva
           // Nodo 0: 1 nemico. Aumenta gradualmente fino a 10.
           const enemyCount = Math.min(10, 1 + Math.floor(difficulty / 1.5));
           for (let i = 0; i < enemyCount; i++) {
               const rand = Math.random();
-              let type: 'SKELETON' | 'GOLEM' | 'MAGE' | 'ARCHER' | 'ZOMBIE' | 'GHOST' = 'SKELETON';
+              let type: 'PEASANT' | 'GUARD' | 'PRIEST' | 'RANGER' | 'KNIGHT' | 'PALADIN' = 'PEASANT';
               
               // La probabilità di trovare nemici speciali aumenta con la difficoltà (inizia a 0%)
               const golemChance = Math.min(0.3, difficulty * 0.03); 
@@ -191,23 +191,23 @@ export class Game extends Scene {
               let baseAtk = 2;
 
               if (rand < golemChance) {
-                  type = 'GOLEM';
+                  type = 'KNIGHT';
                   baseHp = 20;
                   baseAtk = 4;
               } else if (rand < golemChance + mageChance) {
-                  type = 'MAGE';
+                  type = 'PRIEST';
                   baseHp = 10;
                   baseAtk = 5;
               } else if (rand < golemChance + mageChance + archerChance) {
-                  type = 'ARCHER';
+                  type = 'RANGER';
                   baseHp = 6;
                   baseAtk = 3;
               } else if (rand < golemChance + mageChance + archerChance + zombieChance) {
-                  type = 'ZOMBIE';
+                  type = 'GUARD';
                   baseHp = 25;
                   baseAtk = 1;
               } else if (rand < golemChance + mageChance + archerChance + zombieChance + ghostChance) {
-                  type = 'GHOST';
+                  type = 'PALADIN';
                   baseHp = 5;
                   baseAtk = 7;
               }
@@ -218,14 +218,14 @@ export class Game extends Scene {
                   author: `Enemy ${i+1}`,
                   hp: baseHp + Math.floor(difficulty * 2.5) + Math.floor(Math.random() * 4),
                   attack: baseAtk + Math.floor(difficulty * 0.8) + Math.floor(Math.random() * 2),
-                  hasBoneArmor: type === 'GOLEM' && Math.random() < Math.min(0.8, difficulty * 0.05) // Scudo solo a diff elevate
+                  hasBoneArmor: type === 'KNIGHT' && Math.random() < Math.min(0.8, difficulty * 0.05) // Scudo solo a diff elevate
               });
           }
       }
 
           enemyData.forEach((data, index) => {
               const unit = this.createUnit(data, index, true);
-              if (data.author === 'MEGA BOSS') {
+              if (data.author === 'MEGA HERO') {
                   unit.container.setScale(1.5);
                   unit.rect.setFillStyle(0xff0000).setStrokeStyle(4, 0xffaa00);
               }
@@ -437,7 +437,7 @@ export class Game extends Scene {
   }
 
   enemyCounterAttack(enemyFront: RenderedUnit, playerFront: RenderedUnit) {
-      const enemyMages = this.enemyArmy.filter((u, idx) => idx > 0 && (u.data.type === 'MAGE' || u.data.type === 'ARCHER'));
+      const enemyMages = this.enemyArmy.filter((u, idx) => idx > 0 && (u.data.type === 'PRIEST' || u.data.type === 'RANGER'));
       const enemyDistanceDmg = enemyMages.reduce((sum, m) => sum + m.data.attack, 0);
 
       enemyMages.forEach(mage => {
@@ -506,7 +506,7 @@ export class Game extends Scene {
       
       if (isEnemy) {
           // Guadagna anime in base al nemico
-          this.soulsEarned += deadUnit.data.type === 'GOLEM' ? 3 : 1;
+          this.soulsEarned += (deadUnit.data.type === 'KNIGHT' || deadUnit.data.type === 'PALADIN' || deadUnit.data.type === 'HERO') ? 3 : 1;
       }
       
       // Animazione morte

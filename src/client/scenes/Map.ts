@@ -46,16 +46,20 @@ export class MapScene extends Scene {
             fontSize: '20px', color: '#9c27b0', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0);
 
-        this.depthText = this.add.text(20, 20, 'Depth: 0 (Max: 0)', {
+        this.depthText = this.add.text(this.scale.width / 2, this.scale.height - 30, 'Depth: 0 (Max: 0)', {
             fontSize: '18px', color: '#00bcd4', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
-        }).setOrigin(0, 0).setScrollFactor(0);
+        }).setOrigin(0.5, 0.5).setScrollFactor(0);
 
-        this.leaderboardText = this.add.text(this.scale.width - 200, 20, 'Leaderboard...', {
-            fontSize: '14px', color: '#ffeb3b', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold'
-        }).setOrigin(0, 0).setScrollFactor(0);
+        this.leaderboardText = this.add.text(this.scale.width - 20, 20, '🏆 Leaderboard', {
+            fontSize: '18px', color: '#ffeb3b', fontFamily: '"Exo 2", Arial, sans-serif', fontStyle: 'bold',
+            backgroundColor: '#000000', padding: { x: 10, y: 5 }
+        })
+        .setOrigin(1, 0).setScrollFactor(0).setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.showLeaderboardPopup())
+        .on('pointerover', () => this.leaderboardText.setStyle({ color: '#ffffff' }))
+        .on('pointerout', () => this.leaderboardText.setStyle({ color: '#ffeb3b' }));
         
         this.fetchSteps().catch(console.error);
-        this.fetchLeaderboard().catch(console.error);
         
         this.initializeMap().catch(console.error);
 
@@ -72,7 +76,8 @@ export class MapScene extends Scene {
         if (this.titleText) this.titleText.setPosition(width / 2, 40);
         if (this.stepsText) this.stepsText.setPosition(width / 2, 80);
         if (this.soulsText) this.soulsText.setPosition(width / 2, 110);
-        if (this.leaderboardText) this.leaderboardText.setPosition(width - 200, 20);
+        if (this.depthText) this.depthText.setPosition(width / 2, _height - 30);
+        if (this.leaderboardText) this.leaderboardText.setPosition(width - 20, 20);
         // Reposition all open popup elements
         if (this.popupPositionFns.length > 0) {
             const s = Math.min(1, width / 650, _height / 480);
@@ -141,18 +146,92 @@ export class MapScene extends Scene {
         }
     }
 
-    async fetchLeaderboard() {
+    async showLeaderboardPopup() {
+        const W = this.scale.width;
+        const H = this.scale.height;
+        const cx = W / 2;
+        const cy = H / 2;
+
+        const overlay = this.add.rectangle(cx, cy, 99999, 99999, 0x000000, 0.82)
+            .setScrollFactor(0).setDepth(300).setInteractive();
+
+        const popupBg = this.add.rectangle(cx, cy, 400, 500, 0x1a1a2e)
+            .setStrokeStyle(3, 0xffeb3b)
+            .setScrollFactor(0).setDepth(301);
+
+        const title = this.add.text(cx, cy - 210, '🏆 GLOBAL LEADERBOARD 🏆', {
+            fontSize: '22px', color: '#ffeb3b', fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(301);
+
+        const loadingText = this.add.text(cx, cy, 'Loading...', {
+            fontSize: '18px', color: '#ffffff', fontFamily: '"Exo 2", Arial'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(301);
+
+        const closeBtn = this.add.rectangle(cx, cy + 200, 160, 42, 0xe94560)
+            .setScrollFactor(0).setDepth(301)
+            .setInteractive({ useHandCursor: true })
+            .on('pointerover', () => closeBtn.setFillStyle(0xff5c77))
+            .on('pointerout', () => closeBtn.setFillStyle(0xe94560))
+            .on('pointerdown', () => cleanup());
+
+        const closeTxt = this.add.text(cx, cy + 200, 'Close', {
+            fontSize: '17px', color: '#ffffff', fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(301);
+
+        const elements: Phaser.GameObjects.GameObject[] = [overlay, popupBg, title, loadingText, closeBtn, closeTxt];
+        const listElements: { rankText: Phaser.GameObjects.Text, nameText: Phaser.GameObjects.Text, scoreText: Phaser.GameObjects.Text, i: number }[] = [];
+
+        const positionFn = (w: number, h: number) => {
+            overlay.setPosition(w / 2, h / 2);
+            popupBg.setPosition(w / 2, h / 2);
+            title.setPosition(w / 2, h / 2 - 210);
+            if (loadingText.active) loadingText.setPosition(w / 2, h / 2);
+            closeBtn.setPosition(w / 2, h / 2 + 200);
+            closeTxt.setPosition(w / 2, h / 2 + 200);
+
+            listElements.forEach(item => {
+                const newCy = h / 2;
+                const newCx = w / 2;
+                const newY = (newCy - 160) + (item.i * 35);
+                item.rankText.setPosition(newCx - 150, newY);
+                item.nameText.setPosition(newCx - 110, newY);
+                item.scoreText.setPosition(newCx + 150, newY);
+            });
+        };
+        (positionFn as any).__leaderboard = true;
+        this.popupPositionFns.push(positionFn);
+
+        const cleanup = () => {
+            elements.forEach(e => e.destroy());
+            this.popupPositionFns = this.popupPositionFns.filter(fn => !(fn as any).__leaderboard);
+        };
+
         try {
             const lb = await trpc.getLeaderboard.query();
-            let text = "--- TOP 10 ---\n";
+            loadingText.destroy(); // Remove loading text
+            
             lb.forEach((entry: { username: string; score: number }, i: number) => {
-                text += `${i + 1}. ${entry.username}: ${entry.score}\n`;
+                const yPos = (cy - 160) + (i * 35);
+                const color = i === 0 ? '#ffeb3b' : (i === 1 ? '#e0e0e0' : (i === 2 ? '#cd7f32' : '#ffffff'));
+                
+                const rankText = this.add.text(cx - 150, yPos, `${i + 1}.`, {
+                    fontSize: '18px', color, fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+                }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(301);
+
+                const nameText = this.add.text(cx - 110, yPos, entry.username, {
+                    fontSize: '18px', color, fontFamily: '"Exo 2", Arial'
+                }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(301);
+
+                const scoreText = this.add.text(cx + 150, yPos, `${entry.score}`, {
+                    fontSize: '18px', color, fontStyle: 'bold', fontFamily: '"Exo 2", Arial'
+                }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(301);
+
+                elements.push(rankText, nameText, scoreText);
+                listElements.push({ rankText, nameText, scoreText, i });
             });
-            this.leaderboardText.setText(text);
         } catch (err) {
             console.error(err);
-            const msg = (err as Error).message || String(err);
-            this.leaderboardText.setText(`Leaderboard offline: ${msg}`);
+            loadingText.setText(`Error: ${(err as Error).message}`);
         }
     }
 

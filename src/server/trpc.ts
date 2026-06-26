@@ -23,7 +23,7 @@ async function getUserId() {
   }
 }
 
-export type MinionType = 'SKELETON' | 'GOLEM' | 'MAGE' | 'ARCHER' | 'ZOMBIE' | 'GHOST';
+export type MinionType = 'SKELETON' | 'GOLEM' | 'MAGE' | 'ARCHER' | 'ZOMBIE' | 'GHOST' | 'PEASANT' | 'GUARD' | 'PRIEST' | 'RANGER' | 'KNIGHT' | 'PALADIN' | 'HERO';
 
 export interface Minion {
   id: string;
