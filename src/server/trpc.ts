@@ -282,6 +282,18 @@ export const appRouter = router({
       return { success: true };
   }),
 
+  // Rinomina un minion
+  renameMinion: publicProcedure
+    .input(z.object({ minionId: z.string(), newName: z.string() }))
+    .mutation(async ({ input }) => {
+      const userId = await getUserId();
+      const customNamesStr = await redis.get(`minionNames:${userId}`);
+      const customNames: Record<string, string> = customNamesStr ? JSON.parse(customNamesStr) : {};
+      customNames[input.minionId] = input.newName;
+      await redis.set(`minionNames:${userId}`, JSON.stringify(customNames));
+      return { success: true };
+  }),
+
   getMapState: publicProcedure.query(async () => {
     const userId = await getUserId();
     const mapStateStr = await redis.get(`mapState:${userId}`);
@@ -402,6 +414,20 @@ export const appRouter = router({
         minions.push({ id: 'free1', type: 'SKELETON', author: 'System', hp: 10, attack: 2 });
       }
 
+      const customNamesStr = await redis.get(`minionNames:${userId}`);
+      if (customNamesStr) {
+        try {
+           const customNames: Record<string, string> = JSON.parse(customNamesStr);
+           minions.forEach(m => {
+               if (customNames[m.id]) {
+                   m.author = customNames[m.id];
+               }
+           });
+        } catch (e) {
+           console.error('Error parsing custom minion names', e);
+        }
+      }
+
       const orderStr = await redis.get(`armyOrder:${userId}`);
       if (orderStr) {
         try {
@@ -410,6 +436,14 @@ export const appRouter = router({
                if (order[m.id] !== undefined) {
                    m.gridIndex = order[m.id];
                }
+           });
+           
+           // Ordina in modo che le unità con gridIndex (ovvero quelle posizionate attivamente) 
+           // appaiano per prime nell'array.
+           minions.sort((a, b) => {
+               const aGrid = a.gridIndex !== undefined ? a.gridIndex : 999;
+               const bGrid = b.gridIndex !== undefined ? b.gridIndex : 999;
+               return aGrid - bGrid;
            });
         } catch (e) {
            console.error('Error parsing army order', e);

@@ -2,6 +2,7 @@ import { Scene } from 'phaser';
 import * as Phaser from 'phaser';
 import { trpc } from '../trpc';
 import type { Minion } from '../../server/trpc';
+import { showForm } from '@devvit/web/client';
 
 type RenderedUnit = {
     data: Minion;
@@ -158,13 +159,21 @@ export class Game extends Scene {
 
       this.benchedMinions = playerData.slice(armySizeLimit);
 
-      // Assegna gridIndex se mancante
-      const usedIndices = new Set(playerData.slice(0, armySizeLimit).map(d => d.gridIndex).filter(i => i !== undefined));
+      // Assegna gridIndex se mancante in modo robusto
+      const usedIndices = new Set<number>();
+      playerData.slice(0, armySizeLimit).forEach(data => {
+          if (data.gridIndex !== undefined && data.gridIndex >= 0 && data.gridIndex < 15 && !usedIndices.has(data.gridIndex)) {
+              usedIndices.add(data.gridIndex);
+          } else {
+              data.gridIndex = undefined;
+          }
+      });
+      
       let nextFreeIndex = 0;
 
       // Popola Player Army
       playerData.slice(0, armySizeLimit).forEach((data) => {
-          if (data.gridIndex === undefined || data.gridIndex >= 15) {
+          if (data.gridIndex === undefined) {
               while (usedIndices.has(nextFreeIndex)) nextFreeIndex++;
               data.gridIndex = nextFreeIndex;
               usedIndices.add(nextFreeIndex);
@@ -261,7 +270,7 @@ export class Game extends Scene {
       const isMobile = width < 768;
       const spacingX = isMobile ? 55 : 70;
       const spacingY = isMobile ? 65 : 75;
-      const unitsPerCol = isMobile ? 5 : 4; 
+      const unitsPerCol = 5; 
       
       const dir = isEnemy ? 1 : -1;
       const col = Math.floor(index / unitsPerCol);
@@ -282,6 +291,10 @@ export class Game extends Scene {
       const color = this.getColorForType(data.type, isEnemy);
       const rect = this.add.rectangle(0, 0, 50, 50, color).setStrokeStyle(2, isEnemy ? 0xffaaaa : 0xaaccff);
       
+      const nameText = this.add.text(0, -50, data.author, {
+          fontSize: '10px', color: '#aaaaaa', fontFamily: 'Arial'
+      }).setOrigin(0.5);
+
       const hpText = this.add.text(0, -35, `HP: ${data.hp}`, {
           fontSize: '12px', color: '#ffffff', fontFamily: 'Arial', fontStyle: 'bold'
       }).setOrigin(0.5).setShadow(1, 1, '#000000', 1);
@@ -291,7 +304,7 @@ export class Game extends Scene {
           fontSize: '11px', color: '#ffffff', fontFamily: 'Arial', align: 'center', fontStyle: 'bold'
       }).setOrigin(0.5).setShadow(1, 1, '#000000', 1);
 
-      const container = this.add.container(pos.x, pos.y, [rect, hpText, label]);
+      const container = this.add.container(pos.x, pos.y, [rect, nameText, hpText, label]);
 
       if (!isEnemy) {
           container.setSize(60, 60);
@@ -714,15 +727,49 @@ export class Game extends Scene {
                       this.renderBenchContent(width, height, panelHeight); // re-render
                   });
 
+              const nameLabel = this.add.text(x, y - 18, m.author.length > 7 ? m.author.substring(0,6) + '..' : m.author, { fontSize: '9px', color: '#aaaaaa', align: 'center' }).setOrigin(0.5);
               const typeStr = m.type.substring(0, 3);
-              const label = this.add.text(x, y, `${typeStr}\n${m.hp}HP`, { fontSize: '11px', color: '#fff', align: 'center', fontStyle: 'bold' }).setOrigin(0.5);
+              const label = this.add.text(x, y + 8, `${typeStr}\n${m.hp}HP`, { fontSize: '11px', color: '#fff', align: 'center', fontStyle: 'bold' }).setOrigin(0.5);
 
-              inner.add([rect, label]);
+              inner.add([rect, nameLabel, label]);
           });
       };
 
       drawMinionGrid(activeMinions, startYActive, true);
       drawMinionGrid(this.benchedMinions, startYBench, false);
+
+      const selected = this.selectedActiveUnit || this.selectedBenchUnit;
+      if (selected) {
+          const renameBtn = this.add.rectangle(width/2, height/2 + panelHeight/2 - 40, 180, 40, 0x4caf50)
+              .setInteractive({useHandCursor: true})
+              .on('pointerdown', async () => {
+                  try {
+                      const res = await showForm({
+                          title: 'Rinomina Personaggio',
+                          description: `Scegli un nuovo nome per questo ${selected.type}.`,
+                          fields: [
+                              { type: 'string', name: 'newName', label: 'Nuovo Nome', defaultValue: selected.author, required: true }
+                          ],
+                          acceptLabel: 'Salva',
+                          cancelLabel: 'Annulla'
+                      });
+
+                      if (res.action === 'SUBMITTED') {
+                          const newName = res.values.newName as string;
+                          if (newName && newName !== selected.author) {
+                              selected.author = newName;
+                              trpc.renameMinion.mutate({ minionId: selected.id, newName }).catch(console.error);
+                              this.renderBenchContent(width, height, panelHeight);
+                          }
+                      }
+                  } catch (e) {
+                      console.error("Errore nel rinominare", e);
+                  }
+              });
+          
+          const renameLabel = this.add.text(width/2, height/2 + panelHeight/2 - 40, `Rinomina ${selected.type}`, { fontSize: '16px', color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
+          inner.add([renameBtn, renameLabel]);
+      }
   }
 
   swapUnits(u1: Minion, u2: Minion) {
